@@ -1,0 +1,14 @@
+# Cviceni 07 — Rozhodovaci stromy a nahodny les
+# Hyperparametry experimentu. Menite zde, ne v kodu.
+
+tree:
+  max_depth: 5             # maximalni hloubka stromu (null = bez omezeni)
+  criterion: gini          # gini | entropy (entropie je bonusova varianta)
+
+forest:
+  n_estimators: 100        # pocet stromu v lese
+  max_features: 5          # pocet priznaku losovanych v kazdem uzlu (~sqrt(30))
+  max_depth: 5             # maximalni hloubka jednotlivych stromu v lese
+
+data:
+  random_state: 42         # seed pro bootstrap, losovani priznaku i rozdeleni dat
