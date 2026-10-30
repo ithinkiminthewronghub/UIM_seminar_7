@@ -145,11 +145,21 @@ class DecisionTree(Classifier):
             pro entropii nad ``k`` tridami).
         """
         # assert  Ověřte, že y je jednorozmerne pole (y.ndim == 1)
-        raise NotImplementedError(
-            "Úkol: spoctete podily trid v y (np.unique s return_counts=True) a vratte "
-            "pro criterion 'gini' hodnotu 1 - suma p**2, pro 'entropy' -suma p*log2(p) "
-            "(cleny s p == 0 preskocte); cista i prazdna skupina daji 0.0."
-        )
+        assert y.ndim == 1
+        if len(y) == 0:
+            return 0.0
+
+        _, counts = np.unique(y, return_counts=True)
+        p = counts / len(y)
+
+        if self.criterion == "gini":
+            return float(1.0 - np.sum(p ** 2))
+        elif self.criterion == "entropy":
+            p_nonzero = p[p > 0]
+            return float(-np.sum(p_nonzero * np.log2(p_nonzero)))
+        else:
+            raise ValueError(f"Unknown criterion: {self.criterion}")
+
 
     def _information_gain(
         self,
@@ -194,11 +204,18 @@ class DecisionTree(Classifier):
         float
             Informacni zisk rezu (nezaporny, muze byt i presne ``0.0``).
         """
-        # assert  Ověřte, že len(left_y) + len(right_y) == len(parent_y)
-        raise NotImplementedError(
-            "Úkol: vratte _impurity(parent_y) minus vzorky vazeny prumer necistot "
-            "potomku: (n_L/n)*_impurity(left_y) + (n_R/n)*_impurity(right_y)."
-        )
+        assert len(left_y) + len(right_y) == len(parent_y)
+
+        n = len(parent_y)
+        if n == 0:
+            return 0.0
+
+        impurity_parent = self._impurity(parent_y)
+        impurity_left = self._impurity(left_y)
+        impurity_right = self._impurity(right_y)
+
+        gain = impurity_parent - (len(left_y) / n) * impurity_left - (len(right_y) / n) * impurity_right
+        return float(max(0.0, gain))
 
     def _best_split(
         self, x: np.ndarray, y: np.ndarray
@@ -240,14 +257,50 @@ class DecisionTree(Classifier):
         ``_build`` mohl delit dal. Prazdny vysledek signalizuje pouze
         "neni podle ceho delit", ne "nejlepsi rez nic nezlepsi".
         """
-        # assert  Ověřte, že x.ndim == 2 a x.shape[0] == len(y)
-        # assert  Ověřte, že self.max_features je None nebo 1 <= max_features <= x.shape[1]
-        raise NotImplementedError(
-            "Úkol: pres uvazovane priznaky (vsechny, nebo nahodnou podmnozinu velikosti "
-            "max_features losovanou self._rng) zkuste vsechny kandidatni prahy (stredy mezi "
-            "sousednimi ruznymi hodnotami) a vratte (feature, threshold, gain) s nejvetsim "
-            "ziskem; (None, None, 0.0) jen kdyz neexistuje zadny kandidatni prah."
-        )
+        assert x.ndim == 2 and x.shape[0] == len(y)
+        n_samples, n_features = x.shape
+        assert self.max_features is None or (1 <= self.max_features <= n_features)
+
+        best_feature = None
+        best_threshold = None
+        best_gain = 0.0
+        found_split = False
+
+        if self.max_features is None:
+            features = np.arange(n_features)
+        else:
+            features = self._rng.choice(n_features, size=self.max_features, replace=False)
+
+        for j in features:
+            column = x[:, j]
+            unique_vals = np.unique(column)
+            if len(unique_vals) <= 1:
+                continue
+
+            thresholds = (unique_vals[:-1] + unique_vals[1:]) / 2.0
+
+            for t in thresholds:
+                mask = column <= t
+                left_y = y[mask]
+                right_y = y[~mask]
+
+                if len(left_y) == 0 or len(right_y) == 0:
+                    continue
+
+                gain = self._information_gain(y, left_y, right_y)
+
+                if not found_split or gain > best_gain:
+                    best_gain = gain
+                    best_feature = int(j)
+                    best_threshold = float(t)
+                    found_split = True
+                elif not found_split and gain == best_gain:
+                    pass
+
+        if not found_split:
+            return None, None, 0.0
+
+        return best_feature, best_threshold, best_gain
 
     def _build(self, x: np.ndarray, y: np.ndarray, depth: int) -> Node:
         """Rekurzivne postavi (pod)strom pro data ``(x, y)`` v hloubce ``depth``.
@@ -307,16 +360,32 @@ class DecisionTree(Classifier):
         Node
             Koren postaveneho (pod)stromu — list nebo vnitrni uzel.
         """
-        # assert  Ověřte, že self.n_samples_in_ neni None (volano az z fit)
-        # assert  Ověřte, že len(x) == len(y)
-        raise NotImplementedError(
-            "Úkol: vratte list Node(value=vetsinova trida) pri cistem uzlu / dosazene "
-            "max_depth / len(y) < 2 / feature is None z _best_split (NIKDY kvuli nulovemu "
-            "zisku); jinak akumulujte self._importances_[feature] += "
-            "(len(y)/self.n_samples_in_)*gain, "
-            "rozdelte maskou x[:, feature] <= threshold, rekurzivne sestavte potomky s depth+1 "
-            "a vratte vnitrni Node(feature, threshold, left, right) bez value."
-        )
+        assert self.n_samples_in_ is not None
+        assert len(x) == len(y)
+
+        n_samples = len(y)
+        classes, counts = np.unique(y, return_counts=True)
+        majority_class = int(classes[np.argmax(counts)])
+
+        if (
+                len(classes) == 1
+                or (self.max_depth is not None and depth >= self.max_depth)
+                or n_samples < 2
+        ):
+            return Node(value=majority_class)
+
+        feature, threshold, gain = self._best_split(x, y)
+
+        if feature is None:
+            return Node(value=majority_class)
+
+        self._importances_[feature] += (n_samples / self.n_samples_in_) * gain
+
+        mask = x[:, feature] <= threshold
+        left_node = self._build(x[mask], y[mask], depth + 1)
+        right_node = self._build(x[~mask], y[~mask], depth + 1)
+
+        return Node(feature=feature, threshold=threshold, left=left_node, right=right_node)
 
     def fit(self, x: np.ndarray, y: np.ndarray) -> "DecisionTree":
         """Pripravi stav a preda rizeni ``_build``; PREDVYPLNENO.
@@ -371,13 +440,21 @@ class DecisionTree(Classifier):
         np.ndarray
             Predikovane tridy tvaru ``(n_samples,)`` typu ``int``.
         """
-        # assert  Ověřte, že model je nafitovan (self.root_ není None)
-        # assert  Ověřte, že x.shape[1] == self.n_features_in_
-        raise NotImplementedError(
-            "Úkol: pro kazdy radek projdete strom od self.root_; ve vnitrnim uzlu jdete "
-            "doleva pri x[node.feature] <= node.threshold, jinak doprava; v listu vratte "
-            "node.value. Vratte np.ndarray tvaru (n_samples,) typu int."
-        )
+        assert self.root_ is not None
+        x = np.asarray(x, dtype=np.float64)
+        assert x.shape[1] == self.n_features_in_
+
+        predictions = []
+        for row in x:
+            node = self.root_
+            while node.value is None:
+                if row[node.feature] <= node.threshold:
+                    node = node.left
+                else:
+                    node = node.right
+            predictions.append(node.value)
+
+        return np.array(predictions, dtype=int)
 
     @property
     def feature_importances_(self) -> np.ndarray:
@@ -393,11 +470,11 @@ class DecisionTree(Classifier):
             Nezaporny vektor delky ``n_features_in_``, souctem ``1`` (nebo cely
             nulovy).
         """
-        # assert  Ověřte, že model je nafitovan (self._importances_ není None)
-        raise NotImplementedError(
-            "Úkol: vratte self._importances_ vydelene souctem (soucet 1); pri nulovem "
-            "souctu vratte pole nul beze zmeny, nedelte nulou."
-        )
+        assert self._importances_ is not None
+        total = np.sum(self._importances_)
+        if total == 0.0:
+            return self._importances_.copy()
+        return self._importances_ / total
 
     def _to_dict(self) -> dict:
         """Prevede nauceny strom na slovnik serializovatelny do JSON.
@@ -425,12 +502,30 @@ class DecisionTree(Classifier):
         dict
             Zanoreny slovnik obsahujici jen typy, ktere umi ``json``.
         """
-        # assert  Ověřte, že model je nafitovan (self.root_ není None)
-        raise NotImplementedError(
-            "Úkol: sestavte slovnik s hyperparametry, naucenymi atributy a rekurzivne "
-            "prevedenym stromem pod klicem 'root'; vsude pouzijte int()/float()/.tolist(), "
-            "protoze json neumi numpy typy."
-        )
+        assert self.root_ is not None
+
+        def node_to_dict(node: Node | None) -> dict | None:
+            if node is None:
+                return None
+            return {
+                "feature": int(node.feature) if node.feature is not None else None,
+                "threshold": float(node.threshold) if node.threshold is not None else None,
+                "left": node_to_dict(node.left),
+                "right": node_to_dict(node.right),
+                "value": int(node.value) if node.value is not None else None,
+            }
+
+        return {
+            "max_depth": self.max_depth,
+            "max_features": self.max_features,
+            "criterion": self.criterion,
+            "random_state": self.random_state,
+            "n_features_in_": int(self.n_features_in_),
+            "n_samples_in_": int(self.n_samples_in_),
+            "classes_": self.classes_.tolist(),
+            "_importances_": self._importances_.tolist(),
+            "root": node_to_dict(self.root_),
+        }
 
     @classmethod
     def _from_dict(cls, data: dict) -> "DecisionTree":
@@ -459,9 +554,29 @@ class DecisionTree(Classifier):
         DecisionTree
             Nova instance s obnovenym naucenym stavem, pripravena k ``predict``.
         """
-        # assert  Ověřte, že data obsahuje klic "root"
-        raise NotImplementedError(
-            "Úkol: vytvorte instanci s ulozenymi hyperparametry, obnovte naucene atributy "
-            "(classes_ a _importances_ zpet na np.ndarray) a rekurzivne slozte strom "
-            "z vnorenych slovniku na uzly Node; save -> load -> predict musi dat tytez predikce."
+        assert "root" in data
+
+        tree = cls(
+            max_depth=data.get("max_depth"),
+            max_features=data.get("max_features"),
+            criterion=data.get("criterion", "gini"),
+            random_state=data.get("random_state"),
         )
+        tree.n_features_in_ = data["n_features_in_"]
+        tree.n_samples_in_ = data["n_samples_in_"]
+        tree.classes_ = np.array(data["classes_"])
+        tree._importances_ = np.array(data["_importances_"], dtype=np.float64)
+
+        def dict_to_node(d: dict | None) -> Node | None:
+            if d is None:
+                return None
+            return Node(
+                feature=d["feature"],
+                threshold=d["threshold"],
+                left=dict_to_node(d["left"]),
+                right=dict_to_node(d["right"]),
+                value=d["value"],
+            )
+
+        tree.root_ = dict_to_node(data["root"])
+        return tree

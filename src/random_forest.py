@@ -126,11 +126,10 @@ class RandomForest(Classifier):
         tuple[np.ndarray, np.ndarray]
             Dvojice ``(x_b, y_b)`` stejnych tvaru jako vstup.
         """
-        # assert  Ověřte, že x.shape[0] == len(y)
-        raise NotImplementedError(
-            "Úkol: vylosujte n = len(y) indexu S OPAKOVANIM z rozsahu 0..n-1 pres "
-            "self._rng.integers a vratte (x[indices], y[indices])."
-        )
+        assert x.shape[0] == len(y)
+        n = len(y)
+        indices = self._rng.integers(0, n, size=n)
+        return x[indices], y[indices]
 
     def fit(self, x: np.ndarray, y: np.ndarray) -> "RandomForest":
         """Natrenuje ``n_estimators`` stromu, kazdy na vlastnim bootstrapovem vyberu.
@@ -164,12 +163,27 @@ class RandomForest(Classifier):
         RandomForest
             Tato instance (``self``).
         """
-        # assert  Ověřte, že x.ndim == 2 a x.shape[0] == len(y)
-        raise NotImplementedError(
-            "Úkol: nastavte n_features_in_ a classes_, vyprazdnete self.trees_ a "
-            "n_estimators-krat: bootstrap vyber, DecisionTree(max_depth, max_features, "
-            "random_state=jiny seed pro kazdy strom), fit, append; vratte self."
-        )
+        x = np.asarray(x, dtype=np.float64)
+        y = np.asarray(y).ravel().astype(int)
+        assert x.ndim == 2 and x.shape[0] == len(y)
+
+        self.n_features_in_ = x.shape[1]
+        self.classes_ = np.unique(y)
+        self.trees_ = []
+
+        tree_seeds = self._rng.integers(0, 2 ** 31 - 1, size=self.n_estimators)
+
+        for i in range(self.n_estimators):
+            x_b, y_b = self._bootstrap_sample(x, y)
+            tree = DecisionTree(
+                max_depth=self.max_depth,
+                max_features=self.max_features,
+                random_state=int(tree_seeds[i]),
+            )
+            tree.fit(x_b, y_b)
+            self.trees_.append(tree)
+
+        return self
 
     def predict(self, x: np.ndarray) -> np.ndarray:
         """Zaradi kazdy radek ``x`` vetsinovym hlasem napric stromy lesa.
@@ -194,13 +208,25 @@ class RandomForest(Classifier):
         np.ndarray
             Predikovane tridy tvaru ``(n_samples,)`` typu ``int``.
         """
-        # assert  Ověřte, že les je nafitovan (self.trees_ není prázdný)
-        # assert  Ověřte, že x.shape[1] == self.n_features_in_
-        raise NotImplementedError(
-            "Úkol: nechte kazdy strom predikovat cele x, slozte predikce do matice "
-            "(n_stromu, n_samples) a pro kazdy sloupec vratte nejcastejsi tridu "
-            "(remizu ve prospech nizsi tridy)."
-        )
+        assert len(self.trees_) > 0
+        x = np.asarray(x, dtype=np.float64)
+        assert x.shape[1] == self.n_features_in_
+
+        n_samples = x.shape[0]
+        predictions_matrix = np.zeros((len(self.trees_), n_samples), dtype=int)
+
+        for i, tree in enumerate(self.trees_):
+            predictions_matrix[i] = tree.predict(x)
+
+        final_predictions = np.zeros(n_samples, dtype=int)
+        for j in range(n_samples):
+            col = predictions_matrix[:, j]
+            classes, counts = np.unique(col, return_counts=True)
+            max_count = np.max(counts)
+            best_classes = classes[counts == max_count]
+            final_predictions[j] = int(np.min(best_classes))
+
+        return final_predictions
 
     @property
     def feature_importances_(self) -> np.ndarray:
@@ -219,11 +245,18 @@ class RandomForest(Classifier):
         np.ndarray
             Nezaporny vektor delky ``n_features_in_``, souctem ``1``.
         """
-        # assert  Ověřte, že les je nafitovan (self.trees_ není prázdný)
-        raise NotImplementedError(
-            "Úkol: vratte prumer vektoru strom.feature_importances_ pres vsechny "
-            "stromy v self.trees_ (pro jistotu znovu normalizovany na soucet 1)."
-        )
+        assert len(self.trees_) > 0
+
+        importances = np.zeros(self.n_features_in_, dtype=np.float64)
+        for tree in self.trees_:
+            importances += tree.feature_importances_
+
+        importances /= len(self.trees_)
+        total = np.sum(importances)
+        if total > 0.0:
+            importances /= total
+
+        return importances
 
     def _to_dict(self) -> dict:
         """Prevede nauceny les na slovnik serializovatelny do JSON.
@@ -244,11 +277,17 @@ class RandomForest(Classifier):
             Zanoreny slovnik obsahujici jen typy, ktere umi ``json`` (numpy
             hodnoty preved pres ``int()`` / ``.tolist()``).
         """
-        # assert  Ověřte, že les je nafitovan (self.trees_ není prázdný)
-        raise NotImplementedError(
-            "Úkol: sestavte slovnik s hyperparametry lesa, naucenymi atributy a "
-            "seznamem [strom._to_dict() for strom in self.trees_] pod klicem 'trees'."
-        )
+        assert len(self.trees_) > 0
+
+        return {
+            "n_estimators": int(self.n_estimators),
+            "max_features": self.max_features,
+            "max_depth": self.max_depth,
+            "random_state": self.random_state,
+            "n_features_in_": int(self.n_features_in_),
+            "classes_": self.classes_.tolist(),
+            "trees": [tree._to_dict() for tree in self.trees_],
+        }
 
     @classmethod
     def _from_dict(cls, data: dict) -> "RandomForest":
@@ -274,34 +313,42 @@ class RandomForest(Classifier):
         RandomForest
             Nova instance s obnovenym ansamblem, pripravena k ``predict``.
         """
-        # assert  Ověřte, že data obsahuje klic "trees"
-        raise NotImplementedError(
-            "Úkol: vytvorte instanci s ulozenymi hyperparametry, obnovte naucene "
-            "atributy a naplnte self.trees_ pres [DecisionTree._from_dict(d) for d "
-            "in data['trees']]; save -> load -> predict musi dat tytez predikce."
+        assert "trees" in data
+
+        forest = cls(
+            n_estimators=data.get("n_estimators", 100),
+            max_features=data.get("max_features"),
+            max_depth=data.get("max_depth"),
+            random_state=data.get("random_state"),
         )
+        forest.n_features_in_ = data["n_features_in_"]
+        forest.classes_ = np.array(data["classes_"])
+        forest.trees_ = [DecisionTree._from_dict(tree_dict) for tree_dict in data["trees"]]
 
-    @property
-    def oob_score_(self) -> float:
-        """Presnost lesa na out-of-bag vzorcich; BONUS.
+        return forest
 
-        Out-of-bag (OOB) vzorky konkretniho stromu jsou ty, ktere se do jeho
-        bootstrapoveho vyberu NEDOSTALY (v prumeru asi 36,8 %). Pro kazdy vzorek
-        se poridi predikce jen tech stromu, ktere ho ve svem vyberu nemely, a
-        udela se z nich vetsinovy hlas. ``oob_score_`` je podil spravne
-        klasifikovanych vzorku (z tech, ktere maji aspon jeden OOB strom).
 
-        Vyzaduje, aby si ``fit`` u kazdeho stromu zapamatoval pouzite
-        bootstrapove indexy (jinak nelze OOB mnozinu rekonstruovat).
+@property
+def oob_score_(self) -> float:
+    """Presnost lesa na out-of-bag vzorcich; BONUS.
 
-        Navratova hodnota
-        -----------------
-        float
-            Presnost na OOB vzorcich v intervalu ``[0, 1]``.
-        """
-        # assert  Ověřte, že les je nafitovan a fit si zapamatoval bootstrapove indexy
-        raise NotImplementedError(
-            "Úkol: (BONUS) pro kazdy vzorek seberte predikce stromu, ktere ho nemely "
-            "ve svem bootstrapovem vyberu, udelejte vetsinovy hlas a vratte podil "
-            "spravne klasifikovanych OOB vzorku."
-        )
+    Out-of-bag (OOB) vzorky konkretniho stromu jsou ty, ktere se do jeho
+    bootstrapoveho vyberu NEDOSTALY (v prumeru asi 36,8 %). Pro kazdy vzorek
+    se poridi predikce jen tech stromu, ktere ho ve svem vyberu nemely, a
+    udela se z nich vetsinovy hlas. ``oob_score_`` je podil spravne
+    klasifikovanych vzorku (z tech, ktere maji aspon jeden OOB strom).
+
+    Vyzaduje, aby si ``fit`` u kazdeho stromu zapamatoval pouzite
+    bootstrapove indexy (jinak nelze OOB mnozinu rekonstruovat).
+
+    Navratova hodnota
+    -----------------
+    float
+        Presnost na OOB vzorcich v intervalu ``[0, 1]``.
+    """
+    # assert  Ověřte, že les je nafitovan a fit si zapamatoval bootstrapove indexy
+    raise NotImplementedError(
+        "Úkol: (BONUS) pro kazdy vzorek seberte predikce stromu, ktere ho nemely "
+        "ve svem bootstrapovem vyberu, udelejte vetsinovy hlas a vratte podil "
+        "spravne klasifikovanych OOB vzorku."
+    )
